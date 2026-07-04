@@ -313,6 +313,8 @@
             document.querySelectorAll('.basemap-panel').forEach(function(p) { p.classList.remove('open'); });
         }
 
+        var FEATURE_PANES = ['pane_HLB_1', 'pane_3_2', 'pane_2_3', 'pane_1_4'];
+
         function setActiveTool(tool) {
             // clean up any in-progress polygon drawing
             if (polyDrawer) { polyDrawer.disable(); polyDrawer = null; }
@@ -320,6 +322,13 @@
             document.getElementById('map').style.cursor = tool ? 'crosshair' : '';
             if (menuControl._noteItem) menuControl._noteItem.classList.toggle('active', tool === 'note');
             if (menuControl._polyItem) menuControl._polyItem.classList.toggle('active', tool === 'polygon');
+
+            // while a tool is active, let map-taps pass straight through the ward
+            // boundary layers instead of opening their info popups
+            FEATURE_PANES.forEach(function(name) {
+                var pane = map.getPane(name);
+                if (pane) pane.style.pointerEvents = tool ? 'none' : 'auto';
+            });
 
             if (tool === 'polygon') {
                 polyDrawer = new L.Draw.Polygon(map, {
