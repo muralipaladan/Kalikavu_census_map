@@ -11,6 +11,7 @@
         <link rel="stylesheet" href="css/qgis2web.css">
         <link rel="stylesheet" href="css/fontawesome-all.min.css">
         <link rel="stylesheet" href="css/leaflet.photon.css">
+        <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/leaflet.draw/1.0.4/leaflet.draw.css">
         <style>
         html, body, #map {
             width: 100%;
@@ -76,6 +77,91 @@
             padding: 1px 5px;
         }
         .gps-acc-label::before { display: none; }
+
+        .map-tool-btn {
+            width: 40px;
+            height: 40px;
+            background: #fff;
+            border-radius: 4px;
+            box-shadow: 0 1px 4px rgba(0,0,0,0.4);
+            cursor: pointer;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            font-size: 20px;
+            color: #444;
+            user-select: none;
+        }
+        .map-tool-btn:hover { background: #f2f2f2; }
+        .map-tool-btn.active { background: #e8f0fe; color: #1a73e8; }
+
+        .map-menu-wrap { position: relative; }
+        .map-menu-dropdown {
+            display: none;
+            position: absolute;
+            top: 44px;
+            right: 0;
+            background: #fff;
+            border-radius: 8px;
+            box-shadow: 0 2px 10px rgba(0,0,0,0.3);
+            min-width: 190px;
+            overflow: hidden;
+            font-family: Arial, sans-serif;
+        }
+        .map-menu-dropdown.open { display: block; }
+        .map-menu-item {
+            padding: 10px 14px;
+            font-size: 14px;
+            color: #222;
+            cursor: pointer;
+            display: flex;
+            align-items: center;
+            gap: 10px;
+        }
+        .map-menu-item:hover { background: #f2f2f2; }
+        .map-menu-item.active { color: #1a73e8; font-weight: bold; }
+
+        .basemap-panel {
+            display: none;
+            position: absolute;
+            bottom: 44px;
+            right: 0;
+            background: #fff;
+            border-radius: 8px;
+            box-shadow: 0 2px 10px rgba(0,0,0,0.3);
+            padding: 10px;
+            font-family: Arial, sans-serif;
+        }
+        .basemap-panel.open { display: flex; gap: 10px; }
+        .basemap-opt { text-align: center; cursor: pointer; width: 62px; }
+        .basemap-opt .thumb {
+            width: 56px;
+            height: 56px;
+            border-radius: 6px;
+            border: 2px solid transparent;
+            background-size: cover;
+            background-position: center;
+        }
+        .basemap-opt.selected .thumb { border-color: #1a73e8; }
+        .basemap-opt span {
+            display: block;
+            font-size: 10px;
+            margin-top: 3px;
+            color: #333;
+        }
+        .note-popup textarea {
+            width: 180px;
+            height: 60px;
+            font-size: 13px;
+            font-family: Arial, sans-serif;
+        }
+        .note-popup button {
+            margin-top: 6px;
+            padding: 4px 10px;
+            font-size: 12px;
+            cursor: pointer;
+        }
+        .note-popup .np-del { color: #c00; float: right; }
         </style>
         <title> (QFieldCloud)</title>
     </head>
@@ -93,6 +179,7 @@
         <script src="js/labelgun.min.js"></script>
         <script src="js/labels.js"></script>
         <script src="js/leaflet.photon.js"></script>
+        <script src="https://cdnjs.cloudflare.com/ajax/libs/leaflet.draw/1.0.4/leaflet.draw.js"></script>
         <script src="data/HLB_1.js"></script>
         <script src="data/3_2.js"></script>
         <script src="data/2_3.js"></script>
@@ -168,6 +255,184 @@
         var zoomControl = L.control.zoom({
             position: 'topleft'
         }).addTo(map);
+
+        // ---------- Three-dot menu: Note tool + Polygon tool ----------
+        var notesLayer = new L.FeatureGroup().addTo(map);
+        var polysLayer = new L.FeatureGroup().addTo(map);
+        var activeTool = null; // null | 'note' | 'polygon'
+        var polyDrawer = null;
+
+        var MenuControl = L.Control.extend({
+            options: { position: 'topright' },
+            onAdd: function() {
+                var wrap = L.DomUtil.create('div', 'map-menu-wrap');
+                var btn = L.DomUtil.create('div', 'map-tool-btn', wrap);
+                btn.title = 'Tools';
+                btn.innerText = '\u22EE';
+                btn.style.fontSize = '22px';
+                var dd = L.DomUtil.create('div', 'map-menu-dropdown', wrap);
+
+                var noteItem = L.DomUtil.create('div', 'map-menu-item', dd);
+                noteItem.innerHTML = '\u{1F4CD} Note ചേർക്കുക';
+                var polyItem = L.DomUtil.create('div', 'map-menu-item', dd);
+                polyItem.innerHTML = '\u25B1 Polygon വരയ്ക്കുക';
+                var stopItem = L.DomUtil.create('div', 'map-menu-item', dd);
+                stopItem.innerHTML = '\u2716 Tool നിർത്തുക';
+
+                L.DomEvent.disableClickPropagation(wrap);
+                L.DomEvent.on(btn, 'click', function() {
+                    dd.classList.toggle('open');
+                    closeBasemapPanel();
+                });
+                L.DomEvent.on(noteItem, 'click', function() {
+                    setActiveTool('note');
+                    dd.classList.remove('open');
+                });
+                L.DomEvent.on(polyItem, 'click', function() {
+                    setActiveTool('polygon');
+                    dd.classList.remove('open');
+                });
+                L.DomEvent.on(stopItem, 'click', function() {
+                    setActiveTool(null);
+                    dd.classList.remove('open');
+                });
+
+                this._dd = dd;
+                this._noteItem = noteItem;
+                this._polyItem = polyItem;
+                return wrap;
+            }
+        });
+        var menuControl = new MenuControl();
+        map.addControl(menuControl);
+
+        function closeMapMenu() {
+            if (menuControl._dd) menuControl._dd.classList.remove('open');
+        }
+        function closeBasemapPanel() {
+            document.querySelectorAll('.basemap-panel').forEach(function(p) { p.classList.remove('open'); });
+        }
+
+        function setActiveTool(tool) {
+            // clean up any in-progress polygon drawing
+            if (polyDrawer) { polyDrawer.disable(); polyDrawer = null; }
+            activeTool = tool;
+            document.getElementById('map').style.cursor = tool ? 'crosshair' : '';
+            if (menuControl._noteItem) menuControl._noteItem.classList.toggle('active', tool === 'note');
+            if (menuControl._polyItem) menuControl._polyItem.classList.toggle('active', tool === 'polygon');
+
+            if (tool === 'polygon') {
+                polyDrawer = new L.Draw.Polygon(map, {
+                    shapeOptions: { color: '#e65100', weight: 3, fillOpacity: 0.2 }
+                });
+                polyDrawer.enable();
+            }
+        }
+
+        map.on(L.Draw.Event.CREATED, function(e) {
+            if (e.layerType !== 'polygon') return;
+            var text = window.prompt('Ee polygon-nu note/label ezhuthuka:', '');
+            if (text === null) { setActiveTool(null); return; }
+            var layer = e.layer;
+            layer._noteText = text || '';
+            bindNotePopup(layer, true);
+            polysLayer.addLayer(layer);
+            savePolygons();
+            setActiveTool(null);
+        });
+
+        map.on('click', function(e) {
+            if (activeTool !== 'note') return;
+            var text = window.prompt('Ee sthalathinu note ezhuthuka:', '');
+            if (text === null) return;
+            var marker = L.marker(e.latlng, {
+                icon: L.divIcon({
+                    className: '',
+                    html: '<div style="font-size:26px;line-height:26px;transform:translate(-2px,-4px);">\u{1F4CD}</div>',
+                    iconSize: [26, 26],
+                    iconAnchor: [13, 26]
+                })
+            });
+            marker._noteText = text || '';
+            bindNotePopup(marker, false);
+            notesLayer.addLayer(marker);
+            marker.openPopup();
+            saveNotes();
+        });
+
+        function bindNotePopup(layer, isPolygon) {
+            layer.bindPopup(function() {
+                var div = document.createElement('div');
+                div.className = 'note-popup';
+                var ta = document.createElement('textarea');
+                ta.value = layer._noteText || '';
+                var saveBtn = document.createElement('button');
+                saveBtn.innerText = 'Save';
+                var delBtn = document.createElement('button');
+                delBtn.innerText = 'Delete';
+                delBtn.className = 'np-del';
+                div.appendChild(ta);
+                div.appendChild(document.createElement('br'));
+                div.appendChild(saveBtn);
+                div.appendChild(delBtn);
+                saveBtn.onclick = function() {
+                    layer._noteText = ta.value;
+                    layer.closePopup();
+                    isPolygon ? savePolygons() : saveNotes();
+                };
+                delBtn.onclick = function() {
+                    (isPolygon ? polysLayer : notesLayer).removeLayer(layer);
+                    isPolygon ? savePolygons() : saveNotes();
+                };
+                return div;
+            });
+        }
+
+        function saveNotes() {
+            var arr = [];
+            notesLayer.eachLayer(function(m) {
+                var ll = m.getLatLng();
+                arr.push({ lat: ll.lat, lng: ll.lng, text: m._noteText || '' });
+            });
+            try { localStorage.setItem('kalikavu_notes', JSON.stringify(arr)); } catch (e) {}
+        }
+
+        function savePolygons() {
+            var arr = [];
+            polysLayer.eachLayer(function(p) {
+                arr.push({ latlngs: p.getLatLngs(), text: p._noteText || '' });
+            });
+            try { localStorage.setItem('kalikavu_polys', JSON.stringify(arr)); } catch (e) {}
+        }
+
+        function loadNotesAndPolygons() {
+            try {
+                var notes = JSON.parse(localStorage.getItem('kalikavu_notes') || '[]');
+                notes.forEach(function(n) {
+                    var marker = L.marker([n.lat, n.lng], {
+                        icon: L.divIcon({
+                            className: '',
+                            html: '<div style="font-size:26px;line-height:26px;transform:translate(-2px,-4px);">\u{1F4CD}</div>',
+                            iconSize: [26, 26],
+                            iconAnchor: [13, 26]
+                        })
+                    });
+                    marker._noteText = n.text;
+                    bindNotePopup(marker, false);
+                    notesLayer.addLayer(marker);
+                });
+            } catch (e) {}
+            try {
+                var polys = JSON.parse(localStorage.getItem('kalikavu_polys') || '[]');
+                polys.forEach(function(p) {
+                    var layer = L.polygon(p.latlngs, { color: '#e65100', weight: 3, fillOpacity: 0.2 });
+                    layer._noteText = p.text;
+                    bindNotePopup(layer, true);
+                    polysLayer.addLayer(layer);
+                });
+            } catch (e) {}
+        }
+        loadNotesAndPolygons();
 
         // ---------- Live GPS locate (Google Maps style) ----------
         var GpsControl = L.Control.extend({
@@ -363,8 +628,85 @@
             minNativeZoom: 0,
             maxNativeZoom: 20
         });
+        var layer_GoogleRoadmap_0 = L.tileLayer('https://mt1.google.com/vt/lyrs=m&x={x}&y={y}&z={z}', {
+            pane: 'pane_GoogleHybrid_0',
+            opacity: 1.0,
+            attribution: '<a href="https://www.google.at/permissions/geoguidelines/attr-guide.html">Map data ©2015 Google</a>',
+            minZoom: 1,
+            maxZoom: 28,
+            minNativeZoom: 0,
+            maxNativeZoom: 20
+        });
+        var layer_OSM_0 = L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
+            pane: 'pane_GoogleHybrid_0',
+            opacity: 1.0,
+            attribution: '&copy; OpenStreetMap contributors',
+            subdomains: 'abc',
+            minZoom: 1,
+            maxZoom: 19
+        });
         layer_GoogleHybrid_0;
-        map.addLayer(layer_GoogleHybrid_0);
+        // default basemap = Google Roadmap, so first look matches the Google Maps app
+        map.addLayer(layer_GoogleRoadmap_0);
+
+        // ---------- Basemap switcher (bottom-right stack icon, Google Maps style) ----------
+        var BASEMAPS = {
+            roadmap: { layer: layer_GoogleRoadmap_0, label: 'Road', color: '#e8eaed', text: '#333' },
+            hybrid: { layer: layer_GoogleHybrid_0, label: 'Hybrid', color: '#3c4b3f', text: '#fff' },
+            osm: { layer: layer_OSM_0, label: 'OSM', color: '#a8d1a8', text: '#234' }
+        };
+        var activeBasemap = 'roadmap';
+
+        var BasemapControl = L.Control.extend({
+            options: { position: 'bottomright' },
+            onAdd: function() {
+                var wrap = L.DomUtil.create('div', 'map-menu-wrap');
+                var btn = L.DomUtil.create('div', 'map-tool-btn', wrap);
+                btn.title = 'Basemap layers';
+                btn.innerHTML = '\u{1F5FA}\uFE0F';
+                var panel = L.DomUtil.create('div', 'basemap-panel', wrap);
+
+                Object.keys(BASEMAPS).forEach(function(key) {
+                    var b = BASEMAPS[key];
+                    var opt = L.DomUtil.create('div', 'basemap-opt' + (key === activeBasemap ? ' selected' : ''), panel);
+                    opt.setAttribute('data-key', key);
+                    var thumb = L.DomUtil.create('div', 'thumb', opt);
+                    thumb.style.background = b.color;
+                    thumb.style.display = 'flex';
+                    thumb.style.alignItems = 'center';
+                    thumb.style.justifyContent = 'center';
+                    thumb.style.color = b.text;
+                    thumb.style.fontSize = '10px';
+                    thumb.innerHTML = b.label;
+                    var lab = L.DomUtil.create('span', '', opt);
+                    lab.innerText = b.label;
+                    L.DomEvent.on(opt, 'click', function() {
+                        setBasemap(key);
+                        panel.classList.remove('open');
+                    });
+                });
+
+                L.DomEvent.disableClickPropagation(wrap);
+                L.DomEvent.on(btn, 'click', function() {
+                    panel.classList.toggle('open');
+                    closeMapMenu();
+                });
+                this._panel = panel;
+                return wrap;
+            }
+        });
+        map.addControl(new BasemapControl());
+
+        function setBasemap(key) {
+            if (key === activeBasemap) return;
+            map.removeLayer(BASEMAPS[activeBasemap].layer);
+            map.addLayer(BASEMAPS[key].layer);
+            BASEMAPS[key].layer.bringToBack();
+            activeBasemap = key;
+            document.querySelectorAll('.basemap-opt').forEach(function(el) {
+                el.classList.toggle('selected', el.getAttribute('data-key') === key);
+            });
+        }
         function pop_HLB_1(feature, layer) {
             var popupContent = '<table>\
                     <tr>\
