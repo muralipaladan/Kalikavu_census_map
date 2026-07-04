@@ -18,6 +18,55 @@
             padding: 0;
             margin: 0;
         }
+        .gps-btn {
+            width: 40px;
+            height: 40px;
+            background: #fff;
+            border-radius: 4px;
+            box-shadow: 0 1px 4px rgba(0,0,0,0.4);
+            cursor: pointer;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+        }
+        .gps-btn svg {
+            width: 22px;
+            height: 22px;
+        }
+        .gps-btn.active svg circle.gps-dot,
+        .gps-btn.active svg path {
+            fill: #1a73e8;
+            stroke: #1a73e8;
+        }
+        .gps-btn:not(.active) svg circle.gps-dot,
+        .gps-btn:not(.active) svg path {
+            fill: #666;
+            stroke: #666;
+        }
+        .gps-marker .gps-dot-inner {
+            width: 14px;
+            height: 14px;
+            background: #1a73e8;
+            border: 2px solid #fff;
+            border-radius: 50%;
+            box-shadow: 0 0 3px rgba(0,0,0,0.6);
+            position: absolute;
+            top: 2px;
+            left: 2px;
+        }
+        .gps-marker.pulse::before {
+            content: '';
+            position: absolute;
+            width: 18px;
+            height: 18px;
+            background: rgba(26,115,232,0.35);
+            border-radius: 50%;
+            animation: gpsPulse 1.8s infinite;
+        }
+        @keyframes gpsPulse {
+            0% { transform: scale(0.4); opacity: 0.8; }
+            100% { transform: scale(2.6); opacity: 0; }
+        }
         </style>
         <title> (QFieldCloud)</title>
     </head>
@@ -110,6 +159,110 @@
         var zoomControl = L.control.zoom({
             position: 'topleft'
         }).addTo(map);
+
+        // ---------- Live GPS locate (Google Maps style) ----------
+        var GpsControl = L.Control.extend({
+            options: { position: 'topright' },
+            onAdd: function() {
+                var container = L.DomUtil.create('div', 'leaflet-bar gps-btn');
+                container.title = 'GPS ON/OFF';
+                container.innerHTML = '<svg viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg">' +
+                    '<path d="M12 2v2M12 20v2M2 12h2M20 12h2" stroke-width="2" stroke-linecap="round"/>' +
+                    '<circle class="gps-dot" cx="12" cy="12" r="4"/>' +
+                    '</svg>';
+                L.DomEvent.disableClickPropagation(container);
+                L.DomEvent.on(container, 'click', function() {
+                    toggleGps(container);
+                });
+                this._container = container;
+                return container;
+            }
+        });
+        map.addControl(new GpsControl());
+
+        var gpsWatchId = null;
+        var gpsMarker = null;
+        var gpsAccuracyCircle = null;
+        var gpsFirstFix = true;
+
+        function gpsIcon() {
+            return L.divIcon({
+                className: 'gps-marker pulse',
+                html: '<div class="gps-dot-inner"></div>',
+                iconSize: [18, 18],
+                iconAnchor: [9, 9]
+            });
+        }
+
+        function toggleGps(btn) {
+            if (gpsWatchId !== null) {
+                stopGps(btn);
+            } else {
+                startGps(btn);
+            }
+        }
+
+        function startGps(btn) {
+            if (!navigator.geolocation) {
+                alert('GPS not supported ee browser-il.');
+                return;
+            }
+            gpsFirstFix = true;
+            btn.classList.add('active');
+            gpsWatchId = navigator.geolocation.watchPosition(onGpsPosition, onGpsError, {
+                enableHighAccuracy: true,
+                maximumAge: 0,
+                timeout: 15000
+            });
+        }
+
+        function stopGps(btn) {
+            if (gpsWatchId !== null) {
+                navigator.geolocation.clearWatch(gpsWatchId);
+                gpsWatchId = null;
+            }
+            btn.classList.remove('active');
+            if (gpsMarker) { map.removeLayer(gpsMarker); gpsMarker = null; }
+            if (gpsAccuracyCircle) { map.removeLayer(gpsAccuracyCircle); gpsAccuracyCircle = null; }
+        }
+
+        function onGpsPosition(pos) {
+            var lat = pos.coords.latitude;
+            var lng = pos.coords.longitude;
+            var acc = pos.coords.accuracy;
+            var latlng = L.latLng(lat, lng);
+
+            if (!gpsMarker) {
+                gpsMarker = L.marker(latlng, { icon: gpsIcon(), zIndexOffset: 1000 }).addTo(map);
+            } else {
+                gpsMarker.setLatLng(latlng);
+            }
+
+            if (!gpsAccuracyCircle) {
+                gpsAccuracyCircle = L.circle(latlng, {
+                    radius: acc,
+                    color: '#1a73e8',
+                    weight: 1,
+                    fillColor: '#1a73e8',
+                    fillOpacity: 0.15
+                }).addTo(map);
+            } else {
+                gpsAccuracyCircle.setLatLng(latlng);
+                gpsAccuracyCircle.setRadius(acc);
+            }
+
+            if (gpsFirstFix) {
+                map.setView(latlng, Math.max(map.getZoom(), 18));
+                gpsFirstFix = false;
+            }
+        }
+
+        function onGpsError(err) {
+            var msg = 'GPS error: ' + err.message;
+            alert(msg);
+            var btn = document.querySelector('.gps-btn');
+            if (btn) stopGps(btn);
+        }
         var bounds_group = new L.featureGroup([]);
         function setBounds() {
         }
