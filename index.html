@@ -67,6 +67,15 @@
             0% { transform: scale(0.4); opacity: 0.8; }
             100% { transform: scale(2.6); opacity: 0; }
         }
+        .gps-acc-label {
+            background: rgba(0,0,0,0.65);
+            color: #fff;
+            border: none;
+            box-shadow: none;
+            font-size: 11px;
+            padding: 1px 5px;
+        }
+        .gps-acc-label::before { display: none; }
         </style>
         <title> (QFieldCloud)</title>
     </head>
@@ -190,6 +199,8 @@
         var gpsMarker = null;
         var gpsAccuracyCircle = null;
         var gpsFirstFix = true;
+        var gpsBestAccuracy = Infinity;
+        var gpsLastFixTime = 0;
 
         function gpsIcon() {
             return L.divIcon({
@@ -214,11 +225,22 @@
                 return;
             }
             gpsFirstFix = true;
+            gpsBestAccuracy = Infinity;
+            gpsLastFixTime = 0;
             btn.classList.add('active');
+
+            // step 1: quick coarse fix (network/wifi/cell tower) - fast, low battery
+            navigator.geolocation.getCurrentPosition(onGpsPosition, function(){}, {
+                enableHighAccuracy: false,
+                maximumAge: 30000,
+                timeout: 8000
+            });
+
+            // step 2: continuous high-accuracy GPS watch, refines the point as satellite fix improves
             gpsWatchId = navigator.geolocation.watchPosition(onGpsPosition, onGpsError, {
                 enableHighAccuracy: true,
                 maximumAge: 0,
-                timeout: 15000
+                timeout: 20000
             });
         }
 
@@ -230,19 +252,34 @@
             btn.classList.remove('active');
             if (gpsMarker) { map.removeLayer(gpsMarker); gpsMarker = null; }
             if (gpsAccuracyCircle) { map.removeLayer(gpsAccuracyCircle); gpsAccuracyCircle = null; }
+            gpsBestAccuracy = Infinity;
         }
 
         function onGpsPosition(pos) {
             var lat = pos.coords.latitude;
             var lng = pos.coords.longitude;
             var acc = pos.coords.accuracy;
+            var now = Date.now();
             var latlng = L.latLng(lat, lng);
+
+            // Jump filter: reject a fix that is much worse (bigger accuracy radius)
+            // than our recent best, unless it's been a while since the last update
+            // (accuracy naturally worsens temporarily indoors / under tree cover etc.)
+            var staleGap = now - gpsLastFixTime;
+            if (!gpsFirstFix && acc > gpsBestAccuracy * 2.5 && staleGap < 8000) {
+                return;
+            }
+
+            gpsLastFixTime = now;
+            gpsBestAccuracy = Math.min(gpsBestAccuracy, acc);
 
             if (!gpsMarker) {
                 gpsMarker = L.marker(latlng, { icon: gpsIcon(), zIndexOffset: 1000 }).addTo(map);
+                gpsMarker.bindTooltip('', { permanent: true, direction: 'bottom', offset: [0, 6], className: 'gps-acc-label' });
             } else {
                 gpsMarker.setLatLng(latlng);
             }
+            gpsMarker.setTooltipContent('±' + Math.round(acc) + ' m');
 
             if (!gpsAccuracyCircle) {
                 gpsAccuracyCircle = L.circle(latlng, {
@@ -260,6 +297,9 @@
             if (gpsFirstFix) {
                 map.setView(latlng, Math.max(map.getZoom(), 18));
                 gpsFirstFix = false;
+            } else if (!map.getBounds().pad(-0.15).contains(latlng)) {
+                // keep the moving point in view without fighting user's manual pan/zoom too much
+                map.panTo(latlng);
             }
         }
 
