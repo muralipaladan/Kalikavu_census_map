@@ -201,6 +201,8 @@
         var gpsFirstFix = true;
         var gpsBestAccuracy = Infinity;
         var gpsLastFixTime = 0;
+        var gpsTimeoutCount = 0;
+        var gpsRetryTimer = null;
 
         function gpsIcon() {
             return L.divIcon({
@@ -227,6 +229,7 @@
             gpsFirstFix = true;
             gpsBestAccuracy = Infinity;
             gpsLastFixTime = 0;
+            gpsTimeoutCount = 0;
             btn.classList.add('active');
 
             // step 1: quick coarse fix (network/wifi/cell tower) - fast, low battery
@@ -237,10 +240,12 @@
             });
 
             // step 2: continuous high-accuracy GPS watch, refines the point as satellite fix improves
+            // long timeout because a real GPS satellite fix (not wifi/tower) can take
+            // 15-30+ seconds outdoors, and much longer / never indoors
             gpsWatchId = navigator.geolocation.watchPosition(onGpsPosition, onGpsError, {
                 enableHighAccuracy: true,
-                maximumAge: 0,
-                timeout: 20000
+                maximumAge: 5000,
+                timeout: 30000
             });
         }
 
@@ -249,6 +254,7 @@
                 navigator.geolocation.clearWatch(gpsWatchId);
                 gpsWatchId = null;
             }
+            if (gpsRetryTimer) { clearTimeout(gpsRetryTimer); gpsRetryTimer = null; }
             btn.classList.remove('active');
             if (gpsMarker) { map.removeLayer(gpsMarker); gpsMarker = null; }
             if (gpsAccuracyCircle) { map.removeLayer(gpsAccuracyCircle); gpsAccuracyCircle = null; }
@@ -256,6 +262,7 @@
         }
 
         function onGpsPosition(pos) {
+            gpsTimeoutCount = 0;
             var lat = pos.coords.latitude;
             var lng = pos.coords.longitude;
             var acc = pos.coords.accuracy;
@@ -304,10 +311,43 @@
         }
 
         function onGpsError(err) {
-            var msg = 'GPS error: ' + err.message;
-            alert(msg);
             var btn = document.querySelector('.gps-btn');
-            if (btn) stopGps(btn);
+            // code 1 = PERMISSION_DENIED, 2 = POSITION_UNAVAILABLE, 3 = TIMEOUT
+            if (err.code === 1) {
+                alert('GPS permission deny cheythu. Browser settings-il location allow cheyyuka.');
+                if (btn) stopGps(btn);
+                return;
+            }
+
+            // TIMEOUT / POSITION_UNAVAILABLE: don't switch off, just keep retrying.
+            // A satellite fix can genuinely take a while (open sky needed), so this
+            // is normal, not fatal - Google Maps app just silently retries too.
+            gpsTimeoutCount++;
+
+            if (gpsTimeoutCount === 1) {
+                // quiet coarse re-fix immediately, so a marker/point still shows
+                navigator.geolocation.getCurrentPosition(onGpsPosition, function(){}, {
+                    enableHighAccuracy: false,
+                    maximumAge: 15000,
+                    timeout: 8000
+                });
+            }
+
+            if (gpsTimeoutCount >= 3 && !gpsRetryTimer) {
+                // after repeated high-accuracy timeouts, restart the watch with a
+                // relaxed accuracy requirement - works better on weak-signal devices
+                gpsRetryTimer = setTimeout(function() {
+                    gpsRetryTimer = null;
+                    if (gpsWatchId !== null) {
+                        navigator.geolocation.clearWatch(gpsWatchId);
+                    }
+                    gpsWatchId = navigator.geolocation.watchPosition(onGpsPosition, onGpsError, {
+                        enableHighAccuracy: gpsTimeoutCount < 6,
+                        maximumAge: 10000,
+                        timeout: 30000
+                    });
+                }, 500);
+            }
         }
         var bounds_group = new L.featureGroup([]);
         function setBounds() {
