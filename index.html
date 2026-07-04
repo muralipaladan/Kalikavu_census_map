@@ -180,6 +180,12 @@
         });
         map.addControl(new GpsControl());
 
+        // auto-start GPS on load
+        setTimeout(function() {
+            var btn = document.querySelector('.gps-btn');
+            if (btn) startGps(btn);
+        }, 300);
+
         var gpsWatchId = null;
         var gpsMarker = null;
         var gpsAccuracyCircle = null;
